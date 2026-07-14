@@ -29,6 +29,13 @@ export function makeEventRecorder(log) {
     events += 1;
     const type = event?.type ?? 'unknown';
 
+    // ── CAPTURE EVERYTHING ──────────────────────────────────────────────
+    // Dump the FULL payload of every single event at debug level, no matter its
+    // type. This is the ground-truth record of what the runtime actually emits
+    // (names + fields), independent of docs or type defs. Bloats logs on purpose;
+    // set LOG_LEVEL=info to quiet it once we know what we're dealing with.
+    log.debug(`⟐ event #${events}: ${type}`, { event });
+
     switch (type) {
       case 'run-started':
         log.info('▶ run started', { runId: event.runId });

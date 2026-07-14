@@ -57,7 +57,9 @@ export const config = {
 
   /** Logging. */
   log: {
-    level: str('LOG_LEVEL', 'info'), // debug | info | warn | error
+    // Defaulted to `debug` while we're discovering exactly which events the runtime
+    // emits (every event's full payload is dumped at debug). Set LOG_LEVEL=info to quiet.
+    level: str('LOG_LEVEL', 'debug'), // debug | info | warn | error
     dir: str('LOG_DIR', 'logs'),
     // Pretty console output on by default; set LOG_PRETTY=false for JSON-only.
     pretty: str('LOG_PRETTY', 'true') !== 'false',

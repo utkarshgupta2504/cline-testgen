@@ -13,6 +13,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { config } from '../config/index.js';
+import { safeStringify } from './safeJson.js';
 
 const LEVELS = { debug: 10, info: 20, warn: 30, error: 40 };
 const COLORS = {
@@ -55,18 +56,18 @@ function emit(level, message, meta) {
   const time = new Date().toISOString();
   const record = { time, level, message, ...(meta ? { meta } : {}) };
 
-  // 1) durable JSON line
-  streamForToday().write(`${JSON.stringify(record)}\n`);
+  // 1) durable JSON line (safeStringify so circular/huge event payloads never crash logging)
+  streamForToday().write(`${safeStringify(record)}\n`);
 
   // 2) human console line
   if (config.log.pretty) {
     const c = COLORS[level] ?? '';
-    const metaStr = meta && Object.keys(meta).length ? ` ${COLORS.dim}${JSON.stringify(meta)}${COLORS.reset}` : '';
+    const metaStr = meta && Object.keys(meta).length ? ` ${COLORS.dim}${safeStringify(meta)}${COLORS.reset}` : '';
     // eslint-disable-next-line no-console
     console.log(`${COLORS.dim}${time}${COLORS.reset} ${c}${level.toUpperCase().padEnd(5)}${COLORS.reset} ${message}${metaStr}`);
   } else {
     // eslint-disable-next-line no-console
-    console.log(JSON.stringify(record));
+    console.log(safeStringify(record));
   }
 }
 
