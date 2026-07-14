@@ -29,8 +29,9 @@ import { logger } from '../utils/logger.js';
  * end to end (the thing the interactive CLI could not do headlessly).
  *
  * @param {string} token - a secret generated fresh per run by the caller
+ * @param {() => void} [onInvoke] - called when execute() actually runs (ground-truth proof)
  */
-export function makeServerInfoTool(token) {
+export function makeServerInfoTool(token, onInvoke) {
   return createTool({
     name: 'get_server_info',
     description:
@@ -39,6 +40,7 @@ export function makeServerInfoTool(token) {
     inputSchema: { type: 'object', properties: {}, required: [] },
     execute: async () => {
       logger.info('🛠  get_server_info invoked by the agent');
+      if (onInvoke) onInvoke();
       return JSON.stringify({
         verificationToken: token,
         nodeVersion: process.version,

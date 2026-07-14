@@ -20,7 +20,13 @@ import { logger } from '../utils/logger.js';
 export async function runToolCheck() {
   // Fresh secret per run → the model cannot have memorised it.
   const token = `CLINE-${randomUUID().slice(0, 8).toUpperCase()}`;
-  const tool = makeServerInfoTool(token);
+
+  // Ground truth: flip this the instant our tool's execute() actually runs. This is
+  // more reliable than parsing event payloads for the tool name across SDK versions.
+  let toolExecuted = false;
+  const tool = makeServerInfoTool(token, () => {
+    toolExecuted = true;
+  });
 
   logger.info('=== Phase 1.5: tool-call verification ===', { expectedToken: token });
 
@@ -30,7 +36,8 @@ export async function runToolCheck() {
     tools: [tool],
   });
 
-  const calledTool = result.toolCalls.some((c) => c.name === 'get_server_info');
+  // Primary signal = the tool's execute() ran. Secondary = event stream saw it.
+  const calledTool = toolExecuted || result.toolCalls.some((c) => c.name === 'get_server_info');
   const echoedToken = result.outputText.includes(token);
   const pass = result.ok && calledTool && echoedToken;
 

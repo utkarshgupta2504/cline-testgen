@@ -3,15 +3,15 @@
  * transcript you can return over HTTP.
  *
  * `agent.subscribe(listener)` fires an `AgentRuntimeEvent` for every meaningful
- * step: run lifecycle, per-turn model output deltas, tool calls, tool results,
- * token usage, and errors. We log each and stitch the text deltas back into the
- * full assistant message.
- *
- * The known event `type` values (from @cline/shared AgentRuntimeEvent) include:
- *   run-started | turn-started | turn-finished
- *   assistant-text-delta | assistant-reasoning-delta
- *   tool-call | tool-started | tool-finished | tool-result | tool-updated
- *   usage-updated | completed | error
+ * step. The real event `type` values + payloads (from @cline/shared
+ * AgentRuntimeEvent, verified against the installed version) are:
+ *   run-started | run-finished {result} | run-failed {error}
+ *   turn-started | turn-finished {toolCallCount}
+ *   assistant-text-delta {text, accumulatedText}
+ *   assistant-reasoning-delta {text}
+ *   assistant-message {message} | message-added {message}
+ *   tool-started | tool-updated | tool-finished  — each with `toolCall:{ toolName, input, toolCallId }`
+ *   usage-updated {usage} | status-notice
  */
 
 /**
@@ -39,45 +39,61 @@ export function makeEventRecorder(log) {
         break;
 
       case 'assistant-text-delta':
-      case 'text-delta':
-      case 'text':
-        text += event.text ?? event.delta ?? '';
-        // stream to stdout so a human watching sees tokens arrive live
-        process.stdout.write(event.text ?? event.delta ?? '');
+        text += event.text ?? '';
+        process.stdout.write(event.text ?? ''); // live stream for humans watching
         break;
 
       case 'assistant-reasoning-delta':
-      case 'reasoning-delta':
-        reasoning += event.text ?? event.delta ?? '';
+        reasoning += event.text ?? '';
         break;
 
-      case 'tool-call':
+      case 'assistant-message':
+      case 'message-added':
+        // full message snapshots — noisy; keep at debug
+        log.debug(`event: ${type}`, { iteration: event.iteration });
+        break;
+
       case 'tool-started': {
-        const name = event.toolName ?? event.name ?? event.tool?.name ?? 'tool';
-        log.info(`🛠  tool → ${name}`, { input: event.input ?? event.args });
-        toolCalls.push({ name, input: event.input ?? event.args, at: new Date().toISOString() });
+        const name = event.toolCall?.toolName ?? 'tool';
+        log.info(`🛠  tool → ${name}`, { input: event.toolCall?.input, toolCallId: event.toolCall?.toolCallId });
+        toolCalls.push({
+          name,
+          input: event.toolCall?.input,
+          toolCallId: event.toolCall?.toolCallId,
+          at: new Date().toISOString(),
+        });
         break;
       }
 
-      case 'tool-finished':
-      case 'tool-result': {
-        const name = event.toolName ?? event.name ?? 'tool';
-        log.info(`✅ tool ← ${name}`, { ok: event.ok ?? true });
+      case 'tool-updated':
+        log.debug('· tool updated', { tool: event.toolCall?.toolName });
+        break;
+
+      case 'tool-finished': {
+        const name = event.toolCall?.toolName ?? 'tool';
+        log.info(`✅ tool ← ${name}`);
         break;
       }
 
       case 'usage-updated':
-      case 'usage':
-        log.debug('📊 usage', event.usage ?? event);
+        log.debug('📊 usage', event.usage ?? {});
         break;
 
-      case 'completed':
-        if (reasoning) log.debug('🧠 reasoning (truncated)', { chars: reasoning.length });
-        log.info('■ run completed');
+      case 'status-notice':
+        log.debug('status', { message: event.message ?? event });
         break;
 
-      case 'error':
-        log.error('✗ agent error', { error: event.error?.message ?? String(event.error ?? 'unknown') });
+      case 'turn-finished':
+        log.debug('· turn finished', { iteration: event.iteration, toolCallCount: event.toolCallCount });
+        break;
+
+      case 'run-finished':
+        if (reasoning) log.debug('🧠 reasoning captured', { chars: reasoning.length });
+        log.info('■ run finished', { status: event.result?.status, iterations: event.result?.iterations });
+        break;
+
+      case 'run-failed':
+        log.error('✗ run failed', { error: event.error?.message ?? String(event.error ?? 'unknown') });
         break;
 
       default:

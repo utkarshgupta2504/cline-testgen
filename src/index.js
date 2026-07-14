@@ -20,6 +20,13 @@ import { assertNodeVersion } from './utils/assertNode.js';
 import { logger } from './utils/logger.js';
 import { config } from './config/index.js';
 
+// The AI SDK under @cline/sdk prints deprecation/warning lines to stdout (e.g. the
+// 'openai-compatible' providerOptions key notice). Quiet them for clean logs unless
+// explicitly re-enabled with AI_SDK_LOG_WARNINGS=true. Must run before the SDK loads.
+if (process.env.AI_SDK_LOG_WARNINGS !== 'true') {
+  globalThis.AI_SDK_LOG_WARNINGS = false;
+}
+
 async function main() {
   // Guard BEFORE anything imports @cline/sdk, so a wrong Node version yields a
   // clear message instead of a cryptic "TransformStream is not defined".
