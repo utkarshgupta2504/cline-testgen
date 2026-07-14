@@ -126,6 +126,19 @@ The test-gen system prompt ([`src/prompts/testgen.js`](src/prompts/testgen.js)) 
 
 ---
 
+## Troubleshooting
+
+**`ReferenceError: TransformStream is not defined`** — your Node is too old. `@cline/sdk` needs **Node 22+** (Web Streams globals only exist from Node 18). Check with `node -v`, then:
+
+```bash
+nvm install 22 && nvm use 22
+rm -rf node_modules package-lock.json && npm install   # rebuild under the new Node
+```
+
+The app now version-checks on startup and prints this guidance instead of the raw error. An `.nvmrc` (pinned to `22`) is included, so `nvm use` in the project dir picks the right version automatically.
+
+---
+
 ## Known limitations / next steps
 
 - **Latency:** Gemma 12B on CPU is ~60–70 s per response (~3 tok/s). A single blocking `POST /run` is fine for the POC; if it gets too slow to hold a socket, add streaming (SSE) or a job-and-poll pattern. A GPU collapses this to seconds.

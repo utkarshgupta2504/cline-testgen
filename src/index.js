@@ -14,10 +14,15 @@
  *   --prompt "..."  | "..."  -> run a custom prompt (any non-flag args are joined)
  *   (no args)                -> defaults to the stupid prompt
  */
+import { assertNodeVersion } from './utils/assertNode.js';
 import { logger } from './utils/logger.js';
 import { config } from './config/index.js';
 
 async function main() {
+  // Guard BEFORE anything imports @cline/sdk, so a wrong Node version yields a
+  // clear message instead of a cryptic "TransformStream is not defined".
+  assertNodeVersion();
+
   const argv = process.argv.slice(2);
 
   logger.info('cline-testgen starting', {
