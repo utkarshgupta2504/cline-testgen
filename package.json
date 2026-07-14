@@ -10,6 +10,7 @@
   "scripts": {
     "start": "node src/index.js",
     "stupid": "node src/index.js --stupid",
+    "toolcheck": "node src/index.js --toolcheck",
     "prompt": "node src/index.js --prompt",
     "serve": "node src/index.js --serve",
     "dev": "node --watch src/index.js --serve"

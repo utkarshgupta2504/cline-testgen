@@ -5,12 +5,14 @@
  * The three Phase-1 deliverables, in the agreed order (stupid → custom → api):
  *
  *   npm run stupid                     # 1a: hardcoded trivial prompt (smoke test)
+ *   npm run toolcheck                  # 1.5: prove a custom tool can be called
  *   npm start -- "your prompt here"    # 1b: custom prompt from the CLI
  *   npm run serve                      # 1c: HTTP /run API for Streamlit
  *
  * Flag routing (also usable directly via `node src/index.js ...`):
  *   --serve                  -> start the HTTP server
  *   --stupid                 -> run the stupid prompt
+ *   --toolcheck              -> run the tool-call verification
  *   --prompt "..."  | "..."  -> run a custom prompt (any non-flag args are joined)
  *   (no args)                -> defaults to the stupid prompt
  */
@@ -44,6 +46,13 @@ async function main() {
     const { runStupid } = await import('./runners/runStupid.js');
     const r = await runStupid();
     process.exit(r.ok ? 0 : 1);
+  }
+
+  // --- Phase 1.5: tool-call verification ---------------------------------
+  if (argv.includes('--toolcheck')) {
+    const { runToolCheck } = await import('./runners/runToolCheck.js');
+    const r = await runToolCheck();
+    process.exit(r.pass ? 0 : 1);
   }
 
   // --- Phase 1b: custom prompt -------------------------------------------

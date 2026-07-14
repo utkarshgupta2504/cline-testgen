@@ -13,8 +13,13 @@ This is the escape hatch from the interactive-CLI dead end: the Cline **CLI** al
 | Phase | What | Command |
 |------|------|---------|
 | **1a — stupid prompt** | Prove the chain is alive (Node → SDK → Ollama → Gemma). | `npm run stupid` |
+| **1.5 — tool check** | Prove a **custom tool can be called** from the SDK (the thing the CLI couldn't do headlessly). | `npm run toolcheck` |
 | **1b — custom prompt** | Send Gemma any free-text instruction from the CLI. | `npm start -- "add tests to PaymentService"` |
 | **1c — HTTP API** | Expose `/run` so the Streamlit (Python) app can call it. | `npm run serve` |
+
+### Phase 1.5 — how the tool check proves itself
+
+It registers a `get_server_info` tool that returns a **secret token generated fresh each run**, then asks the model to call the tool and echo the token. It only passes if **both** the tool was invoked **and** the token appears in the answer — so a lucky guess can't fake it. If the model answers without calling the tool, you'll get a clear diagnostic (try a more tool-capable model). This is the go/no-go gate before building real file/coverage tools.
 
 ---
 

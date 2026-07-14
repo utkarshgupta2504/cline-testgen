@@ -15,9 +15,40 @@
  * To enable: build your agent with `tools: buildTools()` in a runner/server handler.
  */
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { createTool } from '@cline/sdk';
 import { logger } from '../utils/logger.js';
+
+/**
+ * Verification tool (Phase 1.5).
+ *
+ * Returns live server info that includes a per-run SECRET token the model cannot
+ * possibly know. If the model's answer contains that token, the tool provably ran
+ * and its result reached the model — that's our proof that SDK tool-calling works
+ * end to end (the thing the interactive CLI could not do headlessly).
+ *
+ * @param {string} token - a secret generated fresh per run by the caller
+ */
+export function makeServerInfoTool(token) {
+  return createTool({
+    name: 'get_server_info',
+    description:
+      'Return live information about the server running this agent, including a one-time verification token. ' +
+      'You cannot know these values without calling this tool.',
+    inputSchema: { type: 'object', properties: {}, required: [] },
+    execute: async () => {
+      logger.info('🛠  get_server_info invoked by the agent');
+      return JSON.stringify({
+        verificationToken: token,
+        nodeVersion: process.version,
+        platform: `${os.type()} ${os.release()}`,
+        hostname: os.hostname(),
+        serverTime: new Date().toISOString(),
+      });
+    },
+  });
+}
 
 /**
  * Reads a Java file from the project. Guards against path traversal by resolving
