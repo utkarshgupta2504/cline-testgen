@@ -27,6 +27,13 @@ const COLORS = {
 
 const threshold = LEVELS[config.log.level] ?? LEVELS.info;
 
+// Where human/console log lines go. In the Python-wrapper (sdk-entry) path this is
+// stderr, so stdout stays a single clean JSON result. Default: stdout.
+const CONSOLE = config.log.stream === 'stderr' ? process.stderr : process.stdout;
+
+/** The stream console output is routed to (stdout or stderr). Used for live token streaming. */
+export const consoleStream = () => CONSOLE;
+
 // Resolve + ensure the log directory exists once at startup.
 const logDir = path.resolve(process.cwd(), config.log.dir);
 fs.mkdirSync(logDir, { recursive: true });
@@ -59,15 +66,13 @@ function emit(level, message, meta) {
   // 1) durable JSON line (safeStringify so circular/huge event payloads never crash logging)
   streamForToday().write(`${safeStringify(record)}\n`);
 
-  // 2) human console line
+  // 2) human console line (to the configured stream — stdout or stderr)
   if (config.log.pretty) {
     const c = COLORS[level] ?? '';
     const metaStr = meta && Object.keys(meta).length ? ` ${COLORS.dim}${safeStringify(meta)}${COLORS.reset}` : '';
-    // eslint-disable-next-line no-console
-    console.log(`${COLORS.dim}${time}${COLORS.reset} ${c}${level.toUpperCase().padEnd(5)}${COLORS.reset} ${message}${metaStr}`);
+    CONSOLE.write(`${COLORS.dim}${time}${COLORS.reset} ${c}${level.toUpperCase().padEnd(5)}${COLORS.reset} ${message}${metaStr}\n`);
   } else {
-    // eslint-disable-next-line no-console
-    console.log(safeStringify(record));
+    CONSOLE.write(`${safeStringify(record)}\n`);
   }
 }
 

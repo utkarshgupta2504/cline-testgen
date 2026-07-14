@@ -78,7 +78,8 @@ All config is env-driven (see [`.env.example`](.env.example)); no module reads `
 ```
 cline-testgen/
 ├── src/
-│   ├── index.js              # dispatcher: --stupid | --prompt | --serve
+│   ├── index.js              # dispatcher: --stupid | --toolcheck | --testgen | --prompt | --serve
+│   ├── sdk-entry.js          # machine bridge: JSON stdin → JSON stdout (used by cline_py)
 │   ├── config/index.js       # single source of env-driven config
 │   ├── agent/createAgent.js  # the ONE place that builds a Cline SDK Agent
 │   ├── prompts/
@@ -93,10 +94,18 @@ cline-testgen/
 │   │   └── runTestGen.js     # Phase 2 agentic test generation (read → generate → write)
 │   ├── server/server.js      # Phase 1c: /health, /run, /generate-tests
 │   └── utils/
-│       ├── logger.js         # zero-dep JSON+pretty logger (also a Cline BasicLogger)
-│       └── agentEvents.js    # turns the SDK event stream into logs + a transcript
-├── .env.example
-├── .gitignore
+│       ├── logger.js         # JSON+pretty logger (also a Cline BasicLogger); stdout/stderr routable
+│       ├── agentEvents.js    # turns the SDK event stream into logs + a transcript
+│       ├── safeJson.js       # circular-safe serializer for event payloads
+│       └── assertNode.js     # fail fast on Node < 22
+├── cline_py/                 # Python wrapper — drive the SDK with NO server
+│   ├── __init__.py           #   generate_tests(), run_prompt(), tool_check(), config()
+│   └── _runtime.py           #   spawns node sdk-entry.js; JSON in / JSON out
+├── examples/
+│   ├── springboot-sample/    # runnable Calculator + under-covered test
+│   └── streamlit_app.py      # no-server Streamlit UI importing cline_py
+├── pyproject.toml            # cline_py package (dep: nodejs-wheel-binaries = bundled Node 22)
+├── .env.example · .nvmrc
 └── package.json
 ```
 
@@ -119,36 +128,48 @@ cline-testgen/
 
 Every response is `{ runId, ok, status, iterations, outputText, toolCalls, usage, durationMs, wroteFile?, error? }`.
 
-### Calling it from Streamlit (Python)
+> The HTTP server is still available (`npm run serve`). But if your UI is Python, you usually don't need it — use `cline_py` below and skip the server entirely.
 
-The UI is deliberately **not** in this repo — Streamlit is just an HTTP client. Drop this into your Streamlit app; the Node server does all the work.
+---
 
-```python
-import requests
-import streamlit as st
+## Python usage — no server needed (`cline_py`)
 
-API = "http://localhost:8787"          # the Node SDK server
+The Cline SDK is a Node library, but you don't have to run a Node **server**. The `cline_py` package spawns Node under the hood per call and hands you a plain dict — so a Streamlit (or any Python) app can drive the agent with **no server, no HTTP, no port**.
 
-st.title("🧪 Spring Boot test generator")
-project_root = st.text_input("Project root", "examples/springboot-sample")
-java_path = st.text_input("Java class (relative)", "src/main/java/com/example/demo/Calculator.java")
-test_path = st.text_input("Test file (relative)", "src/test/java/com/example/demo/CalculatorTest.java")
-write_back = st.checkbox("Write the test file back to disk", value=False)
+`nodejs-wheel-binaries` (a Node 22 build) is a dependency, so `pip install` gives you a working runtime — no separate Node setup. (JS deps install lazily on first run.)
 
-if st.button("Generate tests"):
-    with st.spinner("Cline is reading the code and generating tests… (minutes on CPU)"):
-        r = requests.post(f"{API}/generate-tests", json={
-            "projectRoot": project_root,
-            "javaPath": java_path,
-            "testPath": test_path,
-            "write": write_back,
-        }, timeout=600)                # Gemma on CPU is slow; give it room
-    data = r.json()
-    st.caption(f"status={data['status']} · {data['durationMs']/1000:.1f}s · tools={[t['name'] for t in data['toolCalls']]}")
-    st.code(data["outputText"], language="java")
+```bash
+pip install -e .            # installs cline_py + a bundled Node 22
 ```
 
-> **Latency:** set a generous `timeout` (minutes) — the agent makes several model calls (read → reason → write) and Gemma runs ~3 tok/s on CPU. For a snappy UI later, switch the server to streaming (SSE) or a job-and-poll pattern.
+```python
+import cline_py
+
+# fast reachability check (no generation)
+cline_py.config()
+# -> {'ok': True, 'provider': 'ollama', 'model': 'gemma3:12b', 'node': 'v22.20.0', ...}
+
+# agentic test generation — the agent reads the files and (optionally) writes tests back
+result = cline_py.generate_tests(
+    project_root="examples/springboot-sample",
+    java_path="src/main/java/com/example/demo/Calculator.java",
+    test_path="src/test/java/com/example/demo/CalculatorTest.java",
+    write=False,             # True to save the tests to disk
+    timeout=900,             # ~15 min; agentic runs are minutes on CPU
+)
+print(result["outputText"])
+```
+
+Every function returns the same normalized dict: `{ runId, ok, status, iterations, outputText, toolCalls[], usage, durationMs, wroteFile? }`. Also available: `cline_py.run_prompt(prompt)` and `cline_py.tool_check()`.
+
+A ready-to-run Streamlit UI (no server) lives at [`examples/streamlit_app.py`](examples/streamlit_app.py):
+
+```bash
+pip install -e ".[streamlit]"
+streamlit run examples/streamlit_app.py
+```
+
+**How it works:** `cline_py` → `subprocess(node src/sdk-entry.js)` → JSON in / JSON out. The Node boot (~0.5s) is negligible next to minutes of inference, so a per-call subprocess is simpler than a long-running server and needs no lifecycle management. `sdk-entry.js` sends logs to stderr and the single result JSON to stdout.
 
 ---
 

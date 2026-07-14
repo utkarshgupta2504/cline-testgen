@@ -63,6 +63,9 @@ export const config = {
     dir: str('LOG_DIR', 'logs'),
     // Pretty console output on by default; set LOG_PRETTY=false for JSON-only.
     pretty: str('LOG_PRETTY', 'true') !== 'false',
+    // Which stream console lines go to. The Python wrapper sets LOG_STREAM=stderr so
+    // that stdout stays a single clean JSON object (the result). Default: stdout.
+    stream: str('LOG_STREAM', 'stdout') === 'stderr' ? 'stderr' : 'stdout',
   },
 };
 

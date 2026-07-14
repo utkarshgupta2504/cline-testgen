@@ -13,6 +13,7 @@
  *   tool-started | tool-updated | tool-finished  — each with `toolCall:{ toolName, input, toolCallId }`
  *   usage-updated {usage} | status-notice
  */
+import { consoleStream } from './logger.js';
 
 /**
  * Build a subscriber + a `collect()` accessor.
@@ -47,7 +48,7 @@ export function makeEventRecorder(log) {
 
       case 'assistant-text-delta':
         text += event.text ?? '';
-        process.stdout.write(event.text ?? ''); // live stream for humans watching
+        consoleStream().write(event.text ?? ''); // live stream (stdout, or stderr in entry mode)
         break;
 
       case 'assistant-reasoning-delta':

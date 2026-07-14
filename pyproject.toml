@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cline-py"
+version = "0.1.0"
+description = "Python wrapper over the Cline SDK (Node) — drive an LLM coding agent for Spring Boot test generation, with no server."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "utkarshgupta2504" }]
+keywords = ["cline", "cline-sdk", "ollama", "gemma", "llm-agent", "test-generation", "spring-boot"]
+
+# nodejs-wheel-binaries ships a Node 22 build and puts `node`/`npm` on the venv PATH,
+# so `pip install` alone gives a working runtime — no separate Node install needed.
+# (nodejs-bin was considered but tops out at Node 18, too old for @cline/sdk.)
+dependencies = ["nodejs-wheel-binaries~=22.20"]
+
+[project.optional-dependencies]
+streamlit = ["streamlit>=1.36"]
+
+[tool.setuptools]
+packages = ["cline_py"]

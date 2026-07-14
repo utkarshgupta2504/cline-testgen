@@ -15,6 +15,15 @@ logs/
 *.pid
 coverage/
 
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
 # editor
 .vscode/
 .idea/
