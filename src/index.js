@@ -7,12 +7,14 @@
  *   npm run stupid                     # 1a: hardcoded trivial prompt (smoke test)
  *   npm run toolcheck                  # 1.5: prove a custom tool can be called
  *   npm start -- "your prompt here"    # 1b: custom prompt from the CLI
- *   npm run serve                      # 1c: HTTP /run API for Streamlit
+ *   npm run testgen -- --project <root> --java <relPath> [--test <relPath>] [--write]   # 2: agentic test-gen
+ *   npm run serve                      # 1c: HTTP API for Streamlit (/run, /generate-tests)
  *
  * Flag routing (also usable directly via `node src/index.js ...`):
  *   --serve                  -> start the HTTP server
  *   --stupid                 -> run the stupid prompt
  *   --toolcheck              -> run the tool-call verification
+ *   --testgen ...            -> agentic test generation (see flags above)
  *   --prompt "..."  | "..."  -> run a custom prompt (any non-flag args are joined)
  *   (no args)                -> defaults to the stupid prompt
  */
@@ -60,6 +62,29 @@ async function main() {
     const { runToolCheck } = await import('./runners/runToolCheck.js');
     const r = await runToolCheck();
     process.exit(r.pass ? 0 : 1);
+  }
+
+  // --- Phase 2: agentic test generation ----------------------------------
+  //   node src/index.js --testgen --project <root> --java <relPath> [--test <relPath>] [--write] [--extra "..."]
+  if (argv.includes('--testgen')) {
+    const flag = (name) => {
+      const i = argv.indexOf(name);
+      return i >= 0 && i + 1 < argv.length && !argv[i + 1].startsWith('--') ? argv[i + 1] : undefined;
+    };
+    const opts = {
+      projectRoot: flag('--project'),
+      javaPath: flag('--java'),
+      testPath: flag('--test'),
+      write: argv.includes('--write'),
+      extra: flag('--extra') ?? '',
+    };
+    if (!opts.projectRoot || !opts.javaPath) {
+      logger.error('usage: npm run testgen -- --project <root> --java <relPath> [--test <relPath>] [--write] [--extra "..."]');
+      process.exit(1);
+    }
+    const { runTestGen } = await import('./runners/runTestGen.js');
+    const r = await runTestGen(opts);
+    process.exit(r.ok ? 0 : 1);
   }
 
   // --- Phase 1b: custom prompt -------------------------------------------

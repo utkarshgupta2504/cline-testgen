@@ -15,7 +15,8 @@ This is the escape hatch from the interactive-CLI dead end: the Cline **CLI** al
 | **1a — stupid prompt** | Prove the chain is alive (Node → SDK → Ollama → Gemma). | `npm run stupid` |
 | **1.5 — tool check** | Prove a **custom tool can be called** from the SDK (the thing the CLI couldn't do headlessly). | `npm run toolcheck` |
 | **1b — custom prompt** | Send Gemma any free-text instruction from the CLI. | `npm start -- "add tests to PaymentService"` |
-| **1c — HTTP API** | Expose `/run` so the Streamlit (Python) app can call it. | `npm run serve` |
+| **2 — agentic test-gen** | The real thing: agent **reads a Java file + its test**, generates missing cases, **writes them back**. | `npm run testgen -- --project <root> --java <rel> --test <rel> --write` |
+| **1c — HTTP API** | Expose the API so the Streamlit (Python) app can call it. | `npm run serve` |
 
 ### Phase 1.5 — how the tool check proves itself
 
@@ -87,7 +88,9 @@ cline-testgen/
 │   ├── runners/
 │   │   ├── runAgent.js       # shared "run one prompt to completion" + result shape
 │   │   ├── runStupid.js      # Phase 1a
-│   │   └── runPrompt.js      # Phase 1b
+│   │   ├── runToolCheck.js   # Phase 1.5 tool-call verification
+│   │   ├── runPrompt.js      # Phase 1b
+│   │   └── runTestGen.js     # Phase 2 agentic test generation (read → generate → write)
 │   ├── server/server.js      # Phase 1c: /health, /run, /generate-tests
 │   └── utils/
 │       ├── logger.js         # zero-dep JSON+pretty logger (also a Cline BasicLogger)
@@ -107,21 +110,45 @@ cline-testgen/
 |--------|------|------|---------|
 | `GET` | `/health` | — | liveness + effective (non-secret) config |
 | `POST` | `/run` | `{ prompt, systemPrompt? }` | general prompt result |
-| `POST` | `/generate-tests` | `{ className, javaSource, testSource?, extra? }` | product path: builds the 1:5 test-gen prompt for you |
+| `POST` | `/generate-tests` | **agentic:** `{ projectRoot, javaPath, testPath?, write?, extra? }`  ·  **inline:** `{ className, javaSource, testSource?, extra? }` | generate the missing tests |
 
-Every response is `{ runId, ok, status, iterations, outputText, toolCalls, usage, durationMs, error? }`.
+`/generate-tests` picks its mode from the fields you send:
+
+- **Agentic (Phase 2, preferred):** give it file **paths**. The agent uses the `read_java` tool to fetch the source and — when `write: true` — the `write_test` tool to save the updated test class back into the project. Paths are **relative to `projectRoot`**.
+- **Inline (Phase 1 fallback):** paste the source directly and get the tests back in the reply (no disk writes).
+
+Every response is `{ runId, ok, status, iterations, outputText, toolCalls, usage, durationMs, wroteFile?, error? }`.
 
 ### Calling it from Streamlit (Python)
 
+The UI is deliberately **not** in this repo — Streamlit is just an HTTP client. Drop this into your Streamlit app; the Node server does all the work.
+
 ```python
 import requests
-r = requests.post("http://localhost:8787/generate-tests", json={
-    "className": "PaymentService",
-    "javaSource": java_src,
-    "testSource": test_src,
-}, timeout=300)
-st.code(r.json()["outputText"])
+import streamlit as st
+
+API = "http://localhost:8787"          # the Node SDK server
+
+st.title("🧪 Spring Boot test generator")
+project_root = st.text_input("Project root", "examples/springboot-sample")
+java_path = st.text_input("Java class (relative)", "src/main/java/com/example/demo/Calculator.java")
+test_path = st.text_input("Test file (relative)", "src/test/java/com/example/demo/CalculatorTest.java")
+write_back = st.checkbox("Write the test file back to disk", value=False)
+
+if st.button("Generate tests"):
+    with st.spinner("Cline is reading the code and generating tests… (minutes on CPU)"):
+        r = requests.post(f"{API}/generate-tests", json={
+            "projectRoot": project_root,
+            "javaPath": java_path,
+            "testPath": test_path,
+            "write": write_back,
+        }, timeout=600)                # Gemma on CPU is slow; give it room
+    data = r.json()
+    st.caption(f"status={data['status']} · {data['durationMs']/1000:.1f}s · tools={[t['name'] for t in data['toolCalls']]}")
+    st.code(data["outputText"], language="java")
 ```
+
+> **Latency:** set a generous `timeout` (minutes) — the agent makes several model calls (read → reason → write) and Gemma runs ~3 tok/s on CPU. For a snappy UI later, switch the server to streaming (SSE) or a job-and-poll pattern.
 
 ---
 
@@ -146,8 +173,9 @@ The app now version-checks on startup and prints this guidance instead of the ra
 
 ## Known limitations / next steps
 
-- **Latency:** Gemma 12B on CPU is ~60–70 s per response (~3 tok/s). A single blocking `POST /run` is fine for the POC; if it gets too slow to hold a socket, add streaming (SSE) or a job-and-poll pattern. A GPU collapses this to seconds.
-- **Phase 2 — custom tools:** [`src/tools/index.js`](src/tools/index.js) already defines `read_java` / `write_test` via `createTool`. Wire them in (`tools: buildTools(projectRoot)`) so the agent reads/writes real project files instead of receiving source inline.
+- **Latency:** Gemma 12B on CPU is ~60–70 s per response (~3 tok/s), and agentic runs make several calls (read → reason → write). A single blocking request is fine for the POC; add streaming (SSE) or a job-and-poll pattern when the UI needs to feel live. A GPU collapses this to seconds.
+- **Phase 2 is wired:** [`src/tools/index.js`](src/tools/index.js) defines `read_java` / `write_test` via `createTool`, [`src/runners/runTestGen.js`](src/runners/runTestGen.js) drives them, and `/generate-tests` exposes it. Try it on the bundled sample: `npm run testgen -- --project examples/springboot-sample --java src/main/java/com/example/demo/Calculator.java --test src/test/java/com/example/demo/CalculatorTest.java`
+- **Next tools:** add `run_jacoco` (measure coverage before/after) and `validate_compiles` (compile the generated tests) as further `createTool`s — same pattern.
 - **Verify for your stack:** the exact Ollama provider fields and the Gemma tag. Defaults are sensible but confirm against `ollama list` and the SDK docs.
 - **Production:** swap `CLINE_PROVIDER_ID`/`CLINE_BASE_URL` to the hosted **Gauss API** — one config change, no code change.
 

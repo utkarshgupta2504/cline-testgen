@@ -11,6 +11,7 @@
     "start": "node src/index.js",
     "stupid": "node src/index.js --stupid",
     "toolcheck": "node src/index.js --toolcheck",
+    "testgen": "node src/index.js --testgen",
     "prompt": "node src/index.js --prompt",
     "serve": "node src/index.js --serve",
     "dev": "node --watch src/index.js --serve"

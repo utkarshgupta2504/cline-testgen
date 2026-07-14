@@ -14,6 +14,7 @@
  */
 import express from 'express';
 import { runAgent } from '../runners/runAgent.js';
+import { runTestGen } from '../runners/runTestGen.js';
 import { TESTGEN_SYSTEM_PROMPT, buildTestGenPrompt } from '../prompts/testgen.js';
 import { config } from '../config/index.js';
 import { logger } from '../utils/logger.js';
@@ -52,11 +53,39 @@ export function createServer() {
     return res.status(result.ok ? 200 : 500).json(result);
   });
 
-  // Product-shaped endpoint: hand it the class + existing test, get tests back.
+  /**
+   * Product endpoint. Two modes:
+   *
+   *  A) AGENTIC (Phase 2, preferred) — give it file PATHS and let the agent read/write:
+   *     { projectRoot, javaPath, testPath?, write?, extra? }
+   *     The agent uses read_java to fetch the source and (if write=true) write_test to
+   *     save the updated test class back into the project.
+   *
+   *  B) INLINE (Phase 1 fallback) — paste the source directly, get tests in the reply:
+   *     { className, javaSource, testSource?, extra? }
+   *
+   * Mode is chosen by which fields are present (javaPath -> agentic).
+   */
   app.post('/generate-tests', async (req, res) => {
-    const { className, javaSource, testSource = '', extra = '' } = req.body ?? {};
+    const body = req.body ?? {};
+
+    // Mode A — agentic / file-based
+    if (body.projectRoot || body.javaPath) {
+      const { projectRoot, javaPath, testPath, write = false, extra = '' } = body;
+      if (!projectRoot || !javaPath) {
+        return res.status(400).json({ ok: false, error: 'agentic mode needs body.projectRoot and body.javaPath (relative to root)' });
+      }
+      const result = await runTestGen({ projectRoot, javaPath, testPath, write: Boolean(write), extra });
+      return res.status(result.ok ? 200 : 500).json(result);
+    }
+
+    // Mode B — inline source
+    const { className, javaSource, testSource = '', extra = '' } = body;
     if (!className || !javaSource) {
-      return res.status(400).json({ ok: false, error: 'body.className and body.javaSource are required' });
+      return res.status(400).json({
+        ok: false,
+        error: 'provide either { projectRoot, javaPath } (agentic) or { className, javaSource } (inline)',
+      });
     }
     const userPrompt = buildTestGenPrompt({ className, javaSource, testSource, extra });
     const result = await runAgent({ systemPrompt: TESTGEN_SYSTEM_PROMPT, userPrompt });

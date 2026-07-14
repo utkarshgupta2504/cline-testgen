@@ -107,10 +107,16 @@ export function makeWriteTestTool(projectRoot) {
 /**
  * Assemble the tool set for a given project root.
  * Extend this as the pipeline grows (run_jacoco, validate_compiles, …).
+ *
+ * @param {string} projectRoot
+ * @param {object} [opts]
+ * @param {boolean} [opts.write=true] - include the write_test tool (set false for a dry run)
  */
-export function buildTools(projectRoot) {
+export function buildTools(projectRoot, { write = true } = {}) {
   if (!projectRoot) return [];
-  return [makeReadJavaTool(projectRoot), makeWriteTestTool(projectRoot)];
+  const tools = [makeReadJavaTool(projectRoot)];
+  if (write) tools.push(makeWriteTestTool(projectRoot));
+  return tools;
 }
 
 export default buildTools;
