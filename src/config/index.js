@@ -33,11 +33,11 @@ export const config = {
    * flip CLINE_PROVIDER_ID to "openai-compatible" and set CLINE_BASE_URL to `.../v1`.
    */
   llm: {
-    providerId: str('CLINE_PROVIDER_ID', 'ollama'),
+    providerId: str('CLINE_PROVIDER_ID', 'openai-compatible'),
     // NOTE: verify the exact tag you pulled with `ollama list`. There is no public
     // "Gemma 4"; the 12B tag is typically `gemma3:12b`. Override via CLINE_MODEL_ID.
-    modelId: str('CLINE_MODEL_ID', 'gemma3:12b'),
-    baseUrl: str('CLINE_BASE_URL', 'http://localhost:11434'),
+    modelId: str('CLINE_MODEL_ID', 'gemma4:12b'),
+    baseUrl: str('CLINE_BASE_URL', 'http://localhost:11434/v1'),
     // Ollama ignores the API key, but the SDK/provider may require a non-empty string.
     apiKey: str('CLINE_API_KEY', 'ollama'),
   },
