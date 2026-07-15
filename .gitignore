@@ -27,3 +27,6 @@ venv/
 # editor
 .vscode/
 .idea/
+
+# python build artifact (JS bundled into the package at build time)
+cline_py/js/

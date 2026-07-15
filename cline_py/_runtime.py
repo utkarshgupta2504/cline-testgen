@@ -2,12 +2,20 @@
 The bridge: spawn the Node SDK entry point per call, pipe JSON in, read JSON out.
 
 This is what lets us ship WITHOUT a server. There is no long-running process — each
-call runs `node src/sdk-entry.js`, writes the request to stdin, and parses the single
+call runs `node .../sdk-entry.js`, writes the request to stdin, and parses the single
 JSON object from stdout. Node boot (~0.5s) is negligible against minutes of inference.
 
 Node itself is still required (the Cline SDK is a Node library). It's supplied either
-by `nodejs-wheel-binaries` (a Node 22 build installed on PATH via pip) or a system
-Node 22+. On first use, the JS dependencies are installed lazily.
+by `nodejs-wheel-binaries` (a Node 22 build put on PATH by pip) or a system Node 22+.
+
+Where the JS lives (resolved in this order):
+  1. $CLINE_JS_DIR                          — explicit override
+  2. the repo checkout next to this package — dev / `pip install -e .`
+  3. cline_py/js (bundled into the wheel)   — `pip install git+https://…`
+
+When the resolved dir already has node_modules (a dev checkout), we run in place. For
+an installed wheel (read-only, no deps), we copy the JS payload to a writable cache dir
+(~/.cache/cline_py/<version>/js) and `npm ci` there once.
 """
 from __future__ import annotations
 
@@ -21,10 +29,16 @@ from pathlib import Path
 _MIN_NODE_MAJOR = 22
 
 _PKG_DIR = Path(__file__).resolve().parent
-# The Node project (package.json + src/sdk-entry.js). Defaults to the repo root that
-# contains this package; override with CLINE_JS_DIR when installed elsewhere.
-_JS_DIR = Path(os.environ.get("CLINE_JS_DIR", str(_PKG_DIR.parent))).resolve()
-_ENTRY = _JS_DIR / "src" / "sdk-entry.js"
+_BUNDLED_JS = _PKG_DIR / "js"          # present in built wheels
+_REPO_JS = _PKG_DIR.parent             # dev/editable: repo root with live src/ + package.json
+
+
+def _version() -> str:
+    try:
+        from importlib.metadata import version
+        return version("cline-py")
+    except Exception:  # noqa: BLE001
+        return "dev"
 
 
 class ClineError(RuntimeError):
@@ -52,20 +66,58 @@ def _resolve_node() -> str:
     return node
 
 
-def _ensure_deps() -> None:
-    """Lazily install JS dependencies on first use (idempotent, cached by node_modules)."""
-    if (_JS_DIR / "node_modules" / "@cline").exists():
+def _source_js_dir() -> Path:
+    """Find the JS project (the dir containing package.json + src/sdk-entry.js)."""
+    env = os.environ.get("CLINE_JS_DIR")
+    if env:
+        return Path(env).resolve()
+    if (_REPO_JS / "src" / "sdk-entry.js").exists() and (_REPO_JS / "package.json").exists():
+        return _REPO_JS
+    if (_BUNDLED_JS / "src" / "sdk-entry.js").exists():
+        return _BUNDLED_JS
+    raise ClineError(
+        "could not locate the JS bridge (sdk-entry.js). Set CLINE_JS_DIR to the Node project root."
+    )
+
+
+def _cache_dir() -> Path:
+    base = os.environ.get("CLINE_CACHE_DIR") or (Path.home() / ".cache" / "cline_py")
+    return Path(base) / _version() / "js"
+
+
+def _work_dir(source: Path) -> Path:
+    """
+    The directory we actually run Node from (must hold package.json + node_modules).
+
+    Dev checkout with deps already installed → use it in place. Otherwise copy the JS
+    payload to a writable cache dir and let _ensure_deps() install there once.
+    """
+    if (source / "node_modules" / "@cline").exists():
+        return source
+    work = _cache_dir()
+    if not (work / "src" / "sdk-entry.js").exists():
+        work.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(source / "src", work / "src", dirs_exist_ok=True)
+        for f in ("package.json", "package-lock.json"):
+            if (source / f).exists():
+                shutil.copy2(source / f, work / f)
+    return work
+
+
+def _ensure_deps(work: Path) -> None:
+    """Lazily install JS dependencies on first use (idempotent — cached by node_modules)."""
+    if (work / "node_modules" / "@cline").exists():
         return
     npm = shutil.which("npm")
     if not npm:
         raise ClineError(
-            f"npm not found to install JS deps on first run. Provide Node/npm 22+, "
-            f"or pre-install node_modules in {_JS_DIR}."
+            f"npm not found to install JS deps on first run. Provide Node/npm 22+ "
+            f"(e.g. `pip install nodejs-wheel-binaries`), or pre-install node_modules in {work}."
         )
-    print(f"[cline_py] first run — installing JS dependencies in {_JS_DIR} (one time) …", file=sys.stderr)
-    cp = subprocess.run([npm, "ci"], cwd=str(_JS_DIR), capture_output=True, text=True)
+    print(f"[cline_py] first run — installing JS dependencies in {work} (one time) …", file=sys.stderr)
+    cp = subprocess.run([npm, "ci"], cwd=str(work), capture_output=True, text=True)
     if cp.returncode != 0:  # fall back if no lockfile / mismatch
-        cp = subprocess.run([npm, "install"], cwd=str(_JS_DIR), capture_output=True, text=True)
+        cp = subprocess.run([npm, "install"], cwd=str(work), capture_output=True, text=True)
     if cp.returncode != 0:
         raise ClineError("npm install failed:\n" + cp.stderr[-2000:])
 
@@ -78,18 +130,22 @@ def run(request: dict, timeout: float = 900) -> dict:
     calls and Gemma on CPU is ~3 tok/s. Raise it for big classes, lower it for chat.
     """
     node = _resolve_node()
-    _ensure_deps()
-    if not _ENTRY.exists():
-        raise ClineError(f"sdk-entry.js not found at {_ENTRY}. Set CLINE_JS_DIR to the Node project root.")
+    source = _source_js_dir()
+    work = _work_dir(source)
+    _ensure_deps(work)
+
+    entry = work / "src" / "sdk-entry.js"
+    if not entry.exists():
+        raise ClineError(f"sdk-entry.js not found at {entry}.")
 
     env = {**os.environ, "LOG_STREAM": "stderr"}  # keep stdout a clean JSON channel
     payload = json.dumps(request).encode()
     try:
         cp = subprocess.run(
-            [node, str(_ENTRY)],
+            [node, str(entry)],
             input=payload,
             capture_output=True,
-            cwd=str(_JS_DIR),
+            cwd=str(work),
             env=env,
             timeout=timeout,
         )

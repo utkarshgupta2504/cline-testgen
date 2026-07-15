@@ -1,75 +1,274 @@
 # cline-testgen
 
-**Phase 1 POC** — drive the [Cline SDK](https://docs.cline.bot/sdk/overview) *headlessly* (no terminal, no interactive prompt) against a local **Ollama + Gemma** model, to generate missing JUnit test cases for a Spring Boot project.
+**Automatically generate the missing JUnit tests for a Spring Boot class** — an LLM agent reads a Java class and its existing test, works out what isn't covered, and writes the missing cases (weighted heavily to negative/edge cases). The model is **Gemma 12B** running locally via **Ollama**, driven by the **[Cline SDK](https://docs.cline.bot/sdk/overview)**.
 
-This is the escape hatch from the interactive-CLI dead end: the Cline **CLI** always opens an interactive shell for its `ask_question` tool and can't be flagged headless. The Cline **SDK** is the same agent runtime as a library — you call `agent.run(prompt)` in code, register your own tools, and never touch a terminal.
+There are **two ways to use it**:
 
-> Built and verified against `@cline/sdk@0.0.60`, Node 22.
+1. **`cline_py` — a Python package with no server.** `pip install`, `import cline_py`, call a function. Ideal for a Streamlit/Python app. *(This is the recommended path.)*
+2. **A Node CLI + HTTP server.** Run phases from the terminal or expose an HTTP API.
 
----
-
-## The three deliverables (in order)
-
-| Phase | What | Command |
-|------|------|---------|
-| **1a — stupid prompt** | Prove the chain is alive (Node → SDK → Ollama → Gemma). | `npm run stupid` |
-| **1.5 — tool check** | Prove a **custom tool can be called** from the SDK (the thing the CLI couldn't do headlessly). | `npm run toolcheck` |
-| **1b — custom prompt** | Send Gemma any free-text instruction from the CLI. | `npm start -- "add tests to PaymentService"` |
-| **2 — agentic test-gen** | The real thing: agent **reads a Java file + its test**, generates missing cases, **writes them back**. | `npm run testgen -- --project <root> --java <rel> --test <rel> --write` |
-| **1c — HTTP API** | Expose the API so the Streamlit (Python) app can call it. | `npm run serve` |
-
-### Phase 1.5 — how the tool check proves itself
-
-It registers a `get_server_info` tool that returns a **secret token generated fresh each run**, then asks the model to call the tool and echo the token. It only passes if **both** the tool was invoked **and** the token appears in the answer — so a lucky guess can't fake it. If the model answers without calling the tool, you'll get a clear diagnostic (try a more tool-capable model). This is the go/no-go gate before building real file/coverage tools.
+> Built and verified against `@cline/sdk@0.0.60` on Node 22.
 
 ---
 
-## Quick start
+## Contents
 
-```bash
-# 0. prerequisites: Node 22+, and Ollama running with a Gemma model pulled
-ollama pull gemma3:12b          # use the tag that matches your setup
-ollama list                     # confirm the exact tag
+- [Why this exists (30-second version)](#why-this-exists)
+- [Quick start (Python)](#quick-start-python)
+- [Installation](#installation)
+- [Python API reference (`cline_py`)](#python-api-reference-cline_py)
+- [Streamlit example](#streamlit-example)
+- [How it works under the hood](#how-it-works-under-the-hood)
+- [Configuration](#configuration)
+- [The Node side (CLI + HTTP API)](#the-node-side-cli--http-api)
+- [The 1 : 5 test ratio](#the-1--5-test-ratio)
+- [Model &amp; performance](#model--performance)
+- [Project structure](#project-structure)
+- [Troubleshooting](#troubleshooting)
+- [Roadmap](#roadmap)
 
-# 1. install
-npm install
+---
 
-# 2. configure (optional — defaults target local Ollama)
-cp .env.example .env            # then edit CLINE_MODEL_ID if your tag differs
+## Why this exists
 
-# 3. Phase 1a — smoke test
-npm run stupid
+Tests rot: new methods and branches ship without tests, coverage silently drops, bugs escape, and writing the missing cases by hand is tedious. This automates it.
 
-# 4. Phase 1b — custom prompt
-npm start -- "Explain what a Mockito stub is in one line."
+The interesting part is *how*. We first tried to drive the **Cline CLI** from Python, but the CLI's `ask_question` tool always opens an **interactive terminal** and no flag makes it headless — a dead end. The fix was to drop a layer and use the **Cline SDK** (the same agent runtime, but a Node *library* with no terminal). Then, because the SDK is Node and our UI is Python, `cline_py` drives that SDK **without any server** — it spawns Node per call and exchanges JSON.
 
-# 5. Phase 1c — the API
-npm run serve
-# in another shell:
-curl -s localhost:8787/health | jq
-curl -s -X POST localhost:8787/run \
-  -H 'content-type: application/json' \
-  -d '{"prompt":"Say hi and name one JUnit assertion."}' | jq
+```
+  Streamlit / your Python code
+            │  import cline_py
+            ▼
+       cline_py  ──spawns per call──►  node sdk-entry.js  ─►  @cline/sdk (Agent)
+            ▲                                                      │
+            └────────────── JSON result ◄──────────────────┐      ├─► tools: read_java / write_test  ─► your .java files
+                                                           │      └─► Ollama (OpenAI-compatible) ─► Gemma 12B
+                                                     (no server, no port)
 ```
 
-> **Note on `--`:** `npm start -- "..."` forwards the quoted prompt to the script. You can also run it directly: `node src/index.js "your prompt"`.
+---
+
+## Quick start (Python)
+
+```bash
+# 1. Prerequisite: Ollama running with a Gemma model pulled
+ollama pull gemma3:12b            # use the tag that matches your setup
+ollama list                       # confirm the exact tag
+
+# 2. Install straight from GitHub (pulls a bundled Node 22 too — see Installation)
+pip install "git+https://github.com/utkarshgupta2504/cline-testgen.git"
+```
+
+```python
+import cline_py
+
+# point at your model (optional — defaults shown)
+import os
+os.environ["CLINE_MODEL_ID"] = "gemma3:12b"     # your `ollama list` tag
+
+# fast reachability check (no generation)
+print(cline_py.config())
+# -> {'ok': True, 'provider': 'ollama', 'model': 'gemma3:12b', 'node': 'v22.20.0', ...}
+
+# generate the missing tests for a class
+result = cline_py.generate_tests(
+    project_root="/path/to/your/springboot-project",
+    java_path="src/main/java/com/example/PaymentService.java",   # relative to project_root
+    test_path="src/test/java/com/example/PaymentServiceTest.java",
+    write=False,        # True to save the tests back to disk
+    timeout=900,        # ~15 min; agentic runs are minutes on CPU
+)
+print(result["outputText"])       # the generated JUnit code
+```
+
+> **First call is slower**: on first use `cline_py` installs the JS dependencies once (into a cache dir). Every call after that skips straight to running.
+
+---
+
+## Installation
+
+### From GitHub (recommended)
+
+```bash
+pip install "git+https://github.com/utkarshgupta2504/cline-testgen.git"
+```
+
+This installs the `cline_py` package **and** `nodejs-wheel-binaries` (a **Node 22** build placed on your environment's `PATH`). So a single `pip install` gives you a working runtime — **no separate Node installation needed**.
+
+> Why a Node dependency at all? The Cline SDK is a Node library; there's no pure-Python equivalent. `cline_py` runs it for you under the hood. (`nodejs-bin` was considered but tops out at Node 18, too old for the SDK — hence `nodejs-wheel-binaries`, which ships Node 22.)
+
+### For a Streamlit app
+
+```bash
+pip install "git+https://github.com/utkarshgupta2504/cline-testgen.git#egg=cline-py[streamlit]"
+```
+
+### From source (development)
+
+```bash
+git clone https://github.com/utkarshgupta2504/cline-testgen.git
+cd cline-testgen
+npm install                 # install JS deps once (dev mode runs from ./src directly)
+pip install -e .            # editable install of cline_py
+```
+
+In a dev checkout, `cline_py` uses the repo's live `src/` and `node_modules` directly (no copy, no re-install).
+
+### Prerequisites
+
+- **Ollama** running locally with a Gemma model pulled (`ollama pull gemma3:12b`). This is the only thing you install yourself besides `pip`.
+- **Python 3.9+**.
+- **Node 22+** — supplied automatically by the `nodejs-wheel-binaries` dependency, or use a system Node 22+.
+
+---
+
+## Python API reference (`cline_py`)
+
+Every function spawns Node under the hood, blocks until the run completes, and returns a **normalized result dict**. Errors in setup (Node missing, bad JSON, timeout) raise `cline_py.ClineError`; errors in a run come back as `{"ok": false, "error": ...}`.
+
+### The result dict
+
+```python
+{
+  "runId": "…",             # UUID, stamped on every log line for this run
+  "ok": True,               # success boolean
+  "status": "completed",    # SDK status: completed | error | …
+  "iterations": 3,          # how many agent loop turns
+  "outputText": "…",        # the answer / generated tests
+  "toolCalls": [{"name": "read_java", "input": {...}}, …],   # which tools ran
+  "usage": {"inputTokens": …, "outputTokens": …},
+  "durationMs": 247310,
+  "wroteFile": False,       # (generate_tests only) did write_test fire
+}
+```
+
+### `cline_py.config(timeout=60) -> dict`
+
+Fast reachability/health check — returns the effective provider, model, base URL, and Node version. No model generation. Use it to confirm your setup before a long run.
+
+### `cline_py.generate_tests(project_root, java_path, test_path=None, write=False, extra="", timeout=900) -> dict`
+
+The main entry point. The agent reads the class (and existing test) via the `read_java` tool, identifies uncovered behaviour, generates the missing JUnit 5 cases following the **1 : 5 positive:negative** ratio, and — when `write=True` — writes the updated test file back via the `write_test` tool.
+
+| Param | Type | Notes |
+|-------|------|-------|
+| `project_root` | str / path | Absolute path to the Spring Boot project root. |
+| `java_path` | str | Path to the class under test, **relative to `project_root`**. |
+| `test_path` | str | Path to the (existing/target) test file, relative to `project_root`. |
+| `write` | bool | `False` = dry run (tests in `outputText`, disk untouched). `True` = overwrite the test file. |
+| `extra` | str | Extra free-text instructions for the agent. |
+| `timeout` | float | Seconds before the run is aborted. Default ~15 min. |
+
+```python
+result = cline_py.generate_tests(
+    project_root="examples/springboot-sample",
+    java_path="src/main/java/com/example/demo/Calculator.java",
+    test_path="src/test/java/com/example/demo/CalculatorTest.java",
+    write=True,
+)
+print("wrote file:", result["wroteFile"], "in", result["durationMs"] / 1000, "s")
+```
+
+### `cline_py.run_prompt(prompt, timeout=900) -> dict`
+
+Send any free-text prompt to the model (uses the test-gen system prompt). Handy for ad-hoc questions or debugging the model connection.
+
+### `cline_py.tool_check(timeout=300) -> dict`
+
+Runs the tool-call self-test: registers a tool that returns a secret token, asks the model to call it and echo the token, and verifies **both** that the tool executed **and** the token came back. A quick way to confirm your model can do headless tool-calling. Adds `pass`, `calledTool`, `echoedToken` to the result.
+
+### `cline_py.ClineError`
+
+Raised for setup/transport failures (Node not found, wrong Node version, JSON parse error, timeout). Run failures are returned in the dict (`ok=False`), not raised.
+
+---
+
+## Streamlit example
+
+A ready-to-run, **server-less** UI lives at [`examples/streamlit_app.py`](examples/streamlit_app.py):
+
+```bash
+pip install -e ".[streamlit]"        # or install streamlit separately
+streamlit run examples/streamlit_app.py
+```
+
+The whole integration is just `import cline_py` and calling `generate_tests(...)` inside a spinner — no `requests`, no server, no port.
+
+---
+
+## How it works under the hood
+
+`cline_py` is a thin wrapper; the intelligence is the Node SDK. The design goal was **"no server"**, achieved with a per-call subprocess:
+
+1. **The bridge — `src/sdk-entry.js`.** Reads one JSON request on **stdin**, dispatches to the right runner, and writes **exactly one JSON result to stdout**. All logs and events go to **stderr**, so stdout stays a clean data channel.
+2. **Per-call spawn.** `cline_py.run()` locates a Node binary, spawns `node sdk-entry.js`, pipes the request in, and parses the result out. Node boot (~0.5s) is negligible next to minutes of inference, so a fresh process per call is simpler than managing a long-running server.
+3. **Node resolution order.** `$CLINE_NODE` → the `node` on `PATH` (the one `nodejs-wheel-binaries` installs). It verifies the version is ≥ 22 and errors clearly otherwise.
+4. **JS location order.** `$CLINE_JS_DIR` → the repo checkout (dev/editable) → the copy bundled inside the installed package (`cline_py/js/`, produced at build time).
+5. **Lazy dependency install.** If `node_modules` isn't present (a fresh install), the JS payload is copied to a writable cache (`~/.cache/cline_py/<version>/js`) and `npm ci` runs there **once**. Subsequent calls reuse it.
+
+Because the SDK runtime is touched in exactly one JS file (`src/agent/createAgent.js`) and env is read in exactly one place (`src/config/index.js`), the whole thing is easy to reason about and upgrade.
 
 ---
 
 ## Configuration
 
-All config is env-driven (see [`.env.example`](.env.example)); no module reads `process.env` outside [`src/config`](src/config/index.js).
+All configuration is via **environment variables** (set them before calling `cline_py`, e.g. `os.environ[...]` or your shell). The subprocess inherits them.
 
-| Var | Default | Purpose |
-|-----|---------|---------|
-| `CLINE_PROVIDER_ID` | `ollama` | SDK provider. Use `openai-compatible` for a remote `/v1` endpoint (e.g. the future Gauss API). |
-| `CLINE_MODEL_ID` | `gemma3:12b` | Model tag as shown by `ollama list`. **There is no public "Gemma 4" — verify your tag.** |
-| `CLINE_BASE_URL` | `http://localhost:11434` | Ollama base URL (the native provider handles `/v1` + `/api`). |
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `CLINE_PROVIDER_ID` | `ollama` | SDK provider. Use `openai-compatible` for a remote `/v1` endpoint (e.g. a hosted API). |
+| `CLINE_MODEL_ID` | `gemma3:12b` | The model tag, as shown by `ollama list`. **There is no public "Gemma 4"** — verify your tag. |
+| `CLINE_BASE_URL` | `http://localhost:11434` | Where the model is served (the `ollama` provider adds `/v1` itself). |
 | `CLINE_API_KEY` | `ollama` | Ignored by Ollama; kept non-empty for safety. |
-| `CLINE_MAX_ITERATIONS` | `12` | Agent loop cap. |
-| `CLINE_API_TIMEOUT_MS` | `180000` | Per model-call timeout. |
-| `HOST` / `PORT` | `127.0.0.1` / `8787` | HTTP server bind. |
-| `LOG_LEVEL` / `LOG_DIR` / `LOG_PRETTY` | `info` / `logs` / `true` | Logging. |
+| `CLINE_MAX_ITERATIONS` | `12` | Agent loop cap (enough for read → read → reason → write). |
+| `CLINE_API_TIMEOUT_MS` | `180000` | Per model-call timeout inside the SDK. |
+| `LOG_LEVEL` | `debug` | `debug` dumps every SDK event's full payload; set `info` to quiet. |
+| **Python-side** | | |
+| `CLINE_NODE` | — | Force a specific Node binary. |
+| `CLINE_JS_DIR` | — | Point at a specific Node project (overrides auto-detection). |
+| `CLINE_CACHE_DIR` | `~/.cache/cline_py` | Where the lazy JS install is cached. |
+
+> A repo-root `.env` is honored **only** when running from a dev checkout (the subprocess runs there). For a `pip`-installed package, use real environment variables.
+
+---
+
+## The Node side (CLI + HTTP API)
+
+You don't need this for the Python path, but it's fully usable.
+
+### CLI phases (from the repo)
+
+```bash
+npm run stupid                 # smoke test: chat round-trips through the SDK → Ollama → Gemma
+npm run toolcheck              # proves a custom tool can be called headless
+npm start -- "your prompt"     # send a custom prompt
+npm run testgen -- --project <root> --java <rel> --test <rel> --write   # agentic test-gen
+npm run serve                  # start the HTTP API
+```
+
+### HTTP API (`npm run serve`, default `:8787`)
+
+| Method · Path | Body | Does |
+|---|---|---|
+| `GET /health` | — | liveness + effective config |
+| `POST /run` | `{ prompt, systemPrompt? }` | any free-text prompt |
+| `POST /generate-tests` | **agentic:** `{ projectRoot, javaPath, testPath?, write?, extra? }` · **inline:** `{ className, javaSource, testSource? }` | generate the missing tests |
+
+The mode is chosen by which fields you send (paths → agentic). Every response has the same normalized shape as the Python result dict. If your UI is Python, prefer `cline_py` and skip the server.
+
+---
+
+## The 1 : 5 test ratio
+
+For every **1 positive** (happy-path) test, the agent aims for **5 negative** tests — null args, invalid input, boundary values, thrown exceptions, unauthorized access, empty/oversized data — because that's where real bugs hide. It's enforced in the test-gen **system prompt** ([`src/prompts/testgen.js`](src/prompts/testgen.js)), not as a post-filter.
+
+---
+
+## Model &amp; performance
+
+- **Gemma 12B**: ~7.8 GB on disk, needs ~16 GB RAM, runs at ~3 tok/s **on CPU**.
+- A single model call is ~60–70 s; an **agentic run makes several calls** (read → reason → write), so it takes **minutes** on CPU. Set a generous `timeout` (the default is ~15 min).
+- Speed is a hardware story, not a code one: a **GPU** cuts this to seconds, and swapping `CLINE_PROVIDER_ID`/`CLINE_BASE_URL` to a hosted OpenAI-compatible API offloads it entirely — a config change, no code change.
 
 ---
 
@@ -77,128 +276,48 @@ All config is env-driven (see [`.env.example`](.env.example)); no module reads `
 
 ```
 cline-testgen/
-├── src/
-│   ├── index.js              # dispatcher: --stupid | --toolcheck | --testgen | --prompt | --serve
-│   ├── sdk-entry.js          # machine bridge: JSON stdin → JSON stdout (used by cline_py)
-│   ├── config/index.js       # single source of env-driven config
-│   ├── agent/createAgent.js  # the ONE place that builds a Cline SDK Agent
-│   ├── prompts/
-│   │   ├── stupid.js         # Phase 1a trivial prompt
-│   │   └── testgen.js        # Phase 1b/1c test-gen system prompt + builder (1:5 ratio)
-│   ├── tools/index.js        # Phase 2 scaffold: createTool() file tools (read_java, write_test)
-│   ├── runners/
-│   │   ├── runAgent.js       # shared "run one prompt to completion" + result shape
-│   │   ├── runStupid.js      # Phase 1a
-│   │   ├── runToolCheck.js   # Phase 1.5 tool-call verification
-│   │   ├── runPrompt.js      # Phase 1b
-│   │   └── runTestGen.js     # Phase 2 agentic test generation (read → generate → write)
-│   ├── server/server.js      # Phase 1c: /health, /run, /generate-tests
-│   └── utils/
-│       ├── logger.js         # JSON+pretty logger (also a Cline BasicLogger); stdout/stderr routable
-│       ├── agentEvents.js    # turns the SDK event stream into logs + a transcript
-│       ├── safeJson.js       # circular-safe serializer for event payloads
-│       └── assertNode.js     # fail fast on Node < 22
 ├── cline_py/                 # Python wrapper — drive the SDK with NO server
 │   ├── __init__.py           #   generate_tests(), run_prompt(), tool_check(), config()
-│   └── _runtime.py           #   spawns node sdk-entry.js; JSON in / JSON out
+│   └── _runtime.py           #   resolves Node, lazy-installs JS deps, spawns sdk-entry.js
+├── pyproject.toml · setup.py # package metadata + build hook that bundles the JS into the wheel
+├── src/                      # the Node project (the actual agent)
+│   ├── sdk-entry.js          #   machine bridge: JSON stdin → JSON stdout
+│   ├── index.js              #   CLI dispatcher (stupid | toolcheck | testgen | prompt | serve)
+│   ├── config/index.js       #   the ONLY reader of env
+│   ├── agent/createAgent.js  #   the ONLY place that constructs a Cline SDK Agent
+│   ├── prompts/              #   system prompts + the agentic test-gen prompt builder
+│   ├── tools/index.js        #   createTool()s: read_java, write_test (path-guarded)
+│   ├── runners/              #   runAgent (shared) + per-phase runners
+│   ├── server/server.js      #   the optional HTTP API
+│   └── utils/                #   logger, event recorder, safe JSON, Node-version guard
 ├── examples/
-│   ├── springboot-sample/    # runnable Calculator + under-covered test
+│   ├── springboot-sample/    # runnable Calculator + an under-covered test
 │   └── streamlit_app.py      # no-server Streamlit UI importing cline_py
-├── pyproject.toml            # cline_py package (dep: nodejs-wheel-binaries = bundled Node 22)
-├── .env.example · .nvmrc
-└── package.json
+└── .env.example · .nvmrc
 ```
-
-**Design intent:** every layer has one responsibility and the SDK surface is touched in exactly one file (`agent/createAgent.js`), so upgrades and Phase 2 (custom tools, file I/O, JaCoCo, validation) are additive, not rewrites.
-
----
-
-## HTTP API (Phase 1c)
-
-| Method | Path | Body | Returns |
-|--------|------|------|---------|
-| `GET` | `/health` | — | liveness + effective (non-secret) config |
-| `POST` | `/run` | `{ prompt, systemPrompt? }` | general prompt result |
-| `POST` | `/generate-tests` | **agentic:** `{ projectRoot, javaPath, testPath?, write?, extra? }`  ·  **inline:** `{ className, javaSource, testSource?, extra? }` | generate the missing tests |
-
-`/generate-tests` picks its mode from the fields you send:
-
-- **Agentic (Phase 2, preferred):** give it file **paths**. The agent uses the `read_java` tool to fetch the source and — when `write: true` — the `write_test` tool to save the updated test class back into the project. Paths are **relative to `projectRoot`**.
-- **Inline (Phase 1 fallback):** paste the source directly and get the tests back in the reply (no disk writes).
-
-Every response is `{ runId, ok, status, iterations, outputText, toolCalls, usage, durationMs, wroteFile?, error? }`.
-
-> The HTTP server is still available (`npm run serve`). But if your UI is Python, you usually don't need it — use `cline_py` below and skip the server entirely.
-
----
-
-## Python usage — no server needed (`cline_py`)
-
-The Cline SDK is a Node library, but you don't have to run a Node **server**. The `cline_py` package spawns Node under the hood per call and hands you a plain dict — so a Streamlit (or any Python) app can drive the agent with **no server, no HTTP, no port**.
-
-`nodejs-wheel-binaries` (a Node 22 build) is a dependency, so `pip install` gives you a working runtime — no separate Node setup. (JS deps install lazily on first run.)
-
-```bash
-pip install -e .            # installs cline_py + a bundled Node 22
-```
-
-```python
-import cline_py
-
-# fast reachability check (no generation)
-cline_py.config()
-# -> {'ok': True, 'provider': 'ollama', 'model': 'gemma3:12b', 'node': 'v22.20.0', ...}
-
-# agentic test generation — the agent reads the files and (optionally) writes tests back
-result = cline_py.generate_tests(
-    project_root="examples/springboot-sample",
-    java_path="src/main/java/com/example/demo/Calculator.java",
-    test_path="src/test/java/com/example/demo/CalculatorTest.java",
-    write=False,             # True to save the tests to disk
-    timeout=900,             # ~15 min; agentic runs are minutes on CPU
-)
-print(result["outputText"])
-```
-
-Every function returns the same normalized dict: `{ runId, ok, status, iterations, outputText, toolCalls[], usage, durationMs, wroteFile? }`. Also available: `cline_py.run_prompt(prompt)` and `cline_py.tool_check()`.
-
-A ready-to-run Streamlit UI (no server) lives at [`examples/streamlit_app.py`](examples/streamlit_app.py):
-
-```bash
-pip install -e ".[streamlit]"
-streamlit run examples/streamlit_app.py
-```
-
-**How it works:** `cline_py` → `subprocess(node src/sdk-entry.js)` → JSON in / JSON out. The Node boot (~0.5s) is negligible next to minutes of inference, so a per-call subprocess is simpler than a long-running server and needs no lifecycle management. `sdk-entry.js` sends logs to stderr and the single result JSON to stdout.
-
----
-
-## The 1 : 5 test ratio
-
-The test-gen system prompt ([`src/prompts/testgen.js`](src/prompts/testgen.js)) instructs the model to produce ~5 negative tests (null args, invalid input, boundaries, exceptions, unauthorized, empty/oversized) for every 1 positive happy-path test — because that is where real bugs live.
 
 ---
 
 ## Troubleshooting
 
-**`ReferenceError: TransformStream is not defined`** — your Node is too old. `@cline/sdk` needs **Node 22+** (Web Streams globals only exist from Node 18). Check with `node -v`, then:
+**`ClineError: Node.js not found` / `too old`** — the wrapper needs Node 22+. Normally `nodejs-wheel-binaries` (a pip dependency) provides it; if you're using a system Node, upgrade to 22+ or set `CLINE_NODE` to a 22+ binary.
 
-```bash
-nvm install 22 && nvm use 22
-rm -rf node_modules package-lock.json && npm install   # rebuild under the new Node
-```
+**`ReferenceError: TransformStream is not defined`** (Node side) — you're on Node < 18. The SDK needs Node 22+ (Web Streams globals). Upgrade Node; the app also prints this guidance on startup.
 
-The app now version-checks on startup and prints this guidance instead of the raw error. An `.nvmrc` (pinned to `22`) is included, so `nvm use` in the project dir picks the right version automatically.
+**First call hangs for a while** — it's the one-time `npm ci` into the cache. Subsequent calls are fast. Needs network once.
+
+**Model errors / `model not found`** — your `CLINE_MODEL_ID` doesn't match a pulled tag. Run `ollama list` and set it correctly. Remember: there's no public "Gemma 4".
+
+**Run times out** — agentic runs are minutes on CPU; raise `timeout=`. For real speed, use a GPU or a hosted API.
 
 ---
 
-## Known limitations / next steps
+## Roadmap
 
-- **Latency:** Gemma 12B on CPU is ~60–70 s per response (~3 tok/s), and agentic runs make several calls (read → reason → write). A single blocking request is fine for the POC; add streaming (SSE) or a job-and-poll pattern when the UI needs to feel live. A GPU collapses this to seconds.
-- **Phase 2 is wired:** [`src/tools/index.js`](src/tools/index.js) defines `read_java` / `write_test` via `createTool`, [`src/runners/runTestGen.js`](src/runners/runTestGen.js) drives them, and `/generate-tests` exposes it. Try it on the bundled sample: `npm run testgen -- --project examples/springboot-sample --java src/main/java/com/example/demo/Calculator.java --test src/test/java/com/example/demo/CalculatorTest.java`
-- **Next tools:** add `run_jacoco` (measure coverage before/after) and `validate_compiles` (compile the generated tests) as further `createTool`s — same pattern.
-- **Verify for your stack:** the exact Ollama provider fields and the Gemma tag. Defaults are sensible but confirm against `ollama list` and the SDK docs.
-- **Production:** swap `CLINE_PROVIDER_ID`/`CLINE_BASE_URL` to the hosted **Gauss API** — one config change, no code change.
+- **`run_jacoco`** tool — measure coverage before/after so the lift is provable.
+- **`validate_compiles`** tool — compile the generated tests and feed failures back so the agent self-corrects.
+- **Streaming** — push tool/token events to the UI live instead of one blocking call.
+- **Production model** — swap local Ollama for a hosted OpenAI-compatible API via config.
 
 ---
 

@@ -20,5 +20,14 @@ dependencies = ["nodejs-wheel-binaries~=22.20"]
 [project.optional-dependencies]
 streamlit = ["streamlit>=1.36"]
 
+[project.urls]
+Homepage = "https://github.com/utkarshgupta2504/cline-testgen"
+Repository = "https://github.com/utkarshgupta2504/cline-testgen"
+
 [tool.setuptools]
 packages = ["cline_py"]
+
+# Bundle the Node project (copied under cline_py/js/ by setup.py's build hook) so the
+# wheel is self-contained and installable from GitHub without the repo layout.
+[tool.setuptools.package-data]
+cline_py = ["js/**/*", "js/package.json", "js/package-lock.json"]

@@ -21,6 +21,8 @@ Import it, call a function, get a dict back. Under the hood it spawns Node per c
 Every function returns the normalized result dict:
     { runId, ok, status, iterations, outputText, toolCalls[], usage, durationMs, wroteFile? }
 """
+from __future__ import annotations  # allow `str | None` annotations on Python 3.9
+
 from ._runtime import ClineError, run
 
 __all__ = ["config", "run_prompt", "tool_check", "generate_tests", "ClineError"]
